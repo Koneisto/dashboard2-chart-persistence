@@ -1,0 +1,198 @@
+diff --git a/node_modules/@flowfuse/node-red-dashboard/nodes/widgets/ui_chart.html b/node_modules/@flowfuse/node-red-dashboard/nodes/widgets/ui_chart.html
+index 54684e0..0737cb2 100644
+--- a/node_modules/@flowfuse/node-red-dashboard/nodes/widgets/ui_chart.html
++++ b/node_modules/@flowfuse/node-red-dashboard/nodes/widgets/ui_chart.html
+@@ -141,7 +141,8 @@
+                 },
+                 height: { value: 8 },
+                 className: { value: '' },
+-                interpolation: { value: 'linear' }
++                interpolation: { value: 'linear' },
++                persistStore: { value: '' }
+             },
+             inputs: 1,
+             outputs: 1,
+@@ -156,6 +157,20 @@
+             labelStyle: function () { return this.name ? 'node_label_italic' : '' },
+             oneditprepare: function () {
+                 const node = this
++                // Populate context store dropdown for persistence
++                const persistSelect = $('#node-input-persistStore');
++                persistSelect.empty();
++                persistSelect.append($('<option>').val('').text('Disabled'));
++                
++                // Add context stores from RED.settings
++                const ctxStores = RED.settings.context?.stores || ['memory', 'file'];
++                ctxStores.forEach(function(store) {
++                    persistSelect.append($('<option>').val(store).text(store));
++                });
++                
++                // Set current value
++                persistSelect.val(node.persistStore || '');
++
+                 // add "Clear History" button
+                 const clearHistoryBtn = $('<button>')
+                     .attr('class', 'ui-button ui-corner-all ui-widget leftButton')
+@@ -712,4 +727,11 @@
+             <input type="color" id="node-chart-grid-color" class="series-color" style="width:100px;"/>
+         </div>
+     </div>
++    <h4>Data Persistence</h4>
++    <div class="form-row">
++        <label for="node-input-persistStore"><i class="fa fa-database"></i> Context Store</label>
++        <select id="node-input-persistStore" style="width: 70%">
++            <option value="">Disabled</option>
++        </select>
++    </div>
+ </script>
+diff --git a/node_modules/@flowfuse/node-red-dashboard/nodes/widgets/ui_chart.js b/node_modules/@flowfuse/node-red-dashboard/nodes/widgets/ui_chart.js
+index 6930f5c..bf656ec 100644
+--- a/node_modules/@flowfuse/node-red-dashboard/nodes/widgets/ui_chart.js
++++ b/node_modules/@flowfuse/node-red-dashboard/nodes/widgets/ui_chart.js
+@@ -10,6 +10,100 @@ module.exports = function (RED) {
+         // create node in Node-RED
+         RED.nodes.createNode(this, config)
+ 
++        // === PERSISTENCE LAYER START ===
++        const FLUSH_INTERVAL_MS = 60000 // 60 seconds between disk writes
++        let flushTimer = null
++        let isDirty = false
++        let isLoadingHistory = !!(config.persistStore && config.persistStore !== '')
++        let pendingMessages = []
++        
++        function getContextKey() {
++            return 'chart_data_' + node.id.replace(/\./g, '_')
++        }
++        
++        function loadFromContext(callback) {
++            const store = config.persistStore
++            if (!store || store === '') {
++                return callback(null)
++            }
++            const contextKey = getContextKey()
++            node.context().get(contextKey, store, (err, data) => {
++                if (err) {
++                    node.warn('Persistence load error: ' + err.message)
++                    return callback(null)
++                }
++                callback(data || [])
++            })
++        }
++        
++        function saveToContext() {
++            const store = config.persistStore
++            if (!store || store === '') {
++                isDirty = false
++                return
++            }
++            
++            const rawData = datastore.get(node.id)
++            if (!rawData || !Array.isArray(rawData)) {
++                isDirty = false
++                return
++            }
++            
++            // Use X-Axis Limit settings for retention (same as chart display)
++            const removeOlder = parseFloat(config.removeOlder) || 1
++            const removeOlderUnit = parseFloat(config.removeOlderUnit) || 3600
++            const cutoff = Date.now() - (removeOlder * removeOlderUnit * 1000)
++            
++            const filteredData = rawData.filter(msg => {
++                if (!msg || !msg._datapoint) return false
++                let timestamp = msg._datapoint.x
++                if (typeof timestamp === 'string') {
++                    timestamp = new Date(timestamp).getTime()
++                }
++                if (typeof timestamp !== 'number' || isNaN(timestamp)) return false
++                return timestamp > cutoff
++            })
++            
++            const contextKey = getContextKey()
++            node.context().set(contextKey, filteredData, store, (err) => {
++                if (err) {
++                    node.warn('Persistence save error: ' + err.message)
++                } else {
++                    node.log('Persisted ' + filteredData.length + ' chart points')
++                }
++            })
++            
++            isDirty = false
++        }
++        
++        function scheduleFlush() {
++            if (!config.persistStore || config.persistStore === '') return
++            isDirty = true
++            if (flushTimer) return
++            
++            flushTimer = setTimeout(() => {
++                flushTimer = null
++                if (isDirty) {
++                    saveToContext()
++                }
++            }, FLUSH_INTERVAL_MS)
++        }
++        
++        node.on('close', function(done) {
++            if (flushTimer) {
++                clearTimeout(flushTimer)
++                flushTimer = null
++            }
++            if (isDirty && config.persistStore) {
++                node.context().set(getContextKey(), datastore.get(node.id) || [], config.persistStore, (err) => {
++                    done()
++                })
++            } else {
++                done()
++            }
++        })
++        // === PERSISTENCE LAYER END ===
++
+         // which group are we rendering this widget
+         const group = RED.nodes.getNode(config.group)
+         const base = group.getBase()
+@@ -225,6 +319,11 @@ module.exports = function (RED) {
+                 return msg
+             },
+             onInput: function (msg, send, done) {
++                // Queue messages if still loading history to prevent race condition
++                if (isLoadingHistory) {
++                    pendingMessages.push({ msg, send, done })
++                    return
++                }
+                 // use our own custom onInput in order to store history of msg payloads
+                 if (!datastore.get(node.id)) {
+                     datastore.save(base, node, [])
+@@ -304,10 +403,33 @@ module.exports = function (RED) {
+                     }
+                 }
+ 
++                // Trigger persistence flush
++                if (typeof scheduleFlush === 'function') scheduleFlush()
++
+                 send(msg)
+             }
+         }
+ 
++        // Load persisted data on startup
++        if (config.persistStore && config.persistStore !== '') {
++            loadFromContext((loadedData) => {
++                if (loadedData && Array.isArray(loadedData) && loadedData.length > 0) {
++                    node.log('Restoring ' + loadedData.length + ' chart points from context store')
++                    datastore.save(base, node, loadedData)
++                }
++                // Mark loading complete and process any queued messages
++                isLoadingHistory = false
++                if (pendingMessages.length > 0) {
++                    node.log('Processing ' + pendingMessages.length + ' messages queued during restore')
++                    const queued = pendingMessages
++                    pendingMessages = []
++                    queued.forEach(item => {
++                        evts.onInput(item.msg, item.send, item.done)
++                    })
++                }
++            })
++        }
++
+         // inform the dashboard UI that we are adding this node
+         if (group) {
+             group.register(node, config, evts)
