@@ -4,7 +4,7 @@
 > 
 > This is an experimental patch. Use at your own risk.  
 > Not officially supported by FlowFuse or Node-RED.  
-> Tested with @flowfuse/node-red-dashboard 1.30.0
+> Tested with @flowfuse/node-red-dashboard 1.30.0 - 1.30.2
 
 ---
 
@@ -92,7 +92,7 @@ npx patch-package @flowfuse/node-red-dashboard
 
 | Component | Version |
 |-----------|---------|
-| @flowfuse/node-red-dashboard | 1.30.0 |
+| @flowfuse/node-red-dashboard | 1.30.0 - 1.30.2 |
 | Node-RED | 3.x, 4.x |
 | Context Stores | memory, file |
 
@@ -105,6 +105,14 @@ Consider adding native persistence support to ui-chart. This patch demonstrates 
 **Links:**
 - This patch: https://github.com/Koneisto/dashboard2-chart-persistence
 - Dashboard 2.0: https://github.com/FlowFuse/node-red-dashboard
+
+## Official Feature Request
+
+This patch demonstrates the concept. There is an official feature request for native chart persistence in Dashboard 2.0:
+
+**[FlowFuse Dashboard Issue #1362 - Chart Data Persistence](https://github.com/orgs/FlowFuse/projects/15?pane=issue&itemId=82238792&issue=FlowFuse%7Cnode-red-dashboard%7C1362)**
+
+If you find this functionality useful, please upvote the issue to help prioritize native implementation.
 
 ## License
 
